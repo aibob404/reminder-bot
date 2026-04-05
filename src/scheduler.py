@@ -6,6 +6,7 @@ import pytz
 from telegram.ext import Application
 
 from . import db
+from .handlers import _t, _level_label, LEVEL_EMOJI
 from .models import LEVEL_INTERVALS, NOTIFY_WINDOW_START, NOTIFY_WINDOW_END
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,14 @@ async def check_due_reminders(app: Application) -> None:
             now_local = datetime.now(tz)
 
             if _in_window(now_local):
+                lang = user.language
                 await app.bot.send_message(
                     chat_id = user.chat_id,
-                    text    = (
-                        f"🔔 Reminder #{reminder.user_seq}\n"
-                        f"{_level_emoji(reminder.level)} [{reminder.level.upper()}] {reminder.title}"
-                    ),
+                    text    = _t(lang, "notification",
+                                 seq=reminder.user_seq,
+                                 emoji=LEVEL_EMOJI[reminder.level],
+                                 level=_level_label(lang, reminder.level),
+                                 title=reminder.title),
                 )
                 next_notify = _calc_next(reminder.level, now_local, tz)
             else:
@@ -62,7 +65,8 @@ async def check_expired_pauses(app: Application) -> None:
 
             await app.bot.send_message(
                 chat_id = user.chat_id,
-                text    = f"▶️ Reminder #{reminder.user_seq} resumed: \"{reminder.title}\"",
+                text    = _t(user.language, "resumed",
+                             seq=reminder.user_seq, title=reminder.title),
             )
         except Exception as e:
             logger.error("Failed to reactivate reminder %d: %s", reminder.id, e)

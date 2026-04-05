@@ -32,8 +32,12 @@ async def init_schema():
                 chat_id    BIGINT UNIQUE NOT NULL,
                 username   TEXT,
                 timezone   TEXT NOT NULL DEFAULT 'UTC',
+                language   TEXT NOT NULL DEFAULT 'en',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
+        """)
+        await conn.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'en'
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
@@ -97,6 +101,14 @@ async def get_or_create_user(chat_id: int, username: Optional[str]) -> User:
                 chat_id, username,
             )
         return _user(row)
+
+
+async def update_language(chat_id: int, lang: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET language = $1 WHERE chat_id = $2", lang, chat_id
+        )
 
 
 async def update_timezone(chat_id: int, tz: str) -> None:
@@ -208,7 +220,7 @@ async def get_due_reminders() -> list[tuple[Reminder, User]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone
+            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone, u.language AS u_language
                FROM reminders r
                JOIN users u ON u.id = r.user_id
                WHERE r.status = 'active'
@@ -223,6 +235,7 @@ async def get_due_reminders() -> list[tuple[Reminder, User]]:
                 chat_id=row["u_chat_id"],
                 username=None,
                 timezone=row["u_timezone"],
+                language=row["u_language"],
                 created_at=datetime.now(timezone.utc),
             )
             result.append((reminder, user))
@@ -248,7 +261,7 @@ async def get_expired_pauses() -> list[tuple[Reminder, User]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone
+            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone, u.language AS u_language
                FROM reminders r
                JOIN users u ON u.id = r.user_id
                WHERE r.status = 'paused'
@@ -263,6 +276,7 @@ async def get_expired_pauses() -> list[tuple[Reminder, User]]:
                 chat_id=row["u_chat_id"],
                 username=None,
                 timezone=row["u_timezone"],
+                language=row["u_language"],
                 created_at=datetime.now(timezone.utc),
             )
             result.append((reminder, user))
@@ -289,6 +303,7 @@ def _user(row) -> User:
         chat_id=row["chat_id"],
         username=row["username"],
         timezone=row["timezone"],
+        language=row["language"],
         created_at=row["created_at"],
     )
 

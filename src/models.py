@@ -9,6 +9,7 @@ class User:
     chat_id: int
     username: Optional[str]
     timezone: str
+    language: str       # "en" | "ru"
     created_at: datetime
 
 
@@ -38,6 +39,7 @@ class Intent:
     pause_until: Optional[str] = None   # ISO 8601 string from Ollama
     timezone: Optional[str] = None      # IANA timezone string
     reminder_num: Optional[int] = None  # #N reference from user
+    language: str = "en"                # detected language
     reply: Optional[str] = None
 
 
