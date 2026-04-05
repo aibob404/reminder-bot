@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reminder-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reminder-bot
+  template:
+    metadata:
+      labels:
+        app: reminder-bot
+    spec:
+      containers:
+        - name: reminder-bot
+          image: ghcr.io/aibob404/reminder-bot:latest
+          envFrom:
+            - configMapRef:
+                name: reminderbot-config
+            - secretRef:
+                name: reminderbot-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command: ["python3", "-c", "import os; os.kill(1, 0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      restartPolicy: Always

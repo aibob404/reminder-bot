@@ -1,0 +1,270 @@
+import os
+import asyncpg
+from datetime import datetime, timezone
+from typing import Optional
+from .models import User, Reminder
+
+_pool: Optional[asyncpg.Pool] = None
+
+
+async def get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            host=os.environ["PGHOST"],
+            port=int(os.environ.get("PGPORT", 5432)),
+            database=os.environ["PGDATABASE"],
+            user=os.environ["PGUSER"],
+            password=os.environ["PGPASSWORD"],
+            min_size=1,
+            max_size=5,
+        )
+    return _pool
+
+
+async def init_schema():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         SERIAL PRIMARY KEY,
+                chat_id    BIGINT UNIQUE NOT NULL,
+                username   TEXT,
+                timezone   TEXT NOT NULL DEFAULT 'UTC',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id             SERIAL PRIMARY KEY,
+                user_id        INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                title          TEXT NOT NULL,
+                level          VARCHAR(10) NOT NULL DEFAULT 'medium',
+                status         VARCHAR(20) NOT NULL DEFAULT 'active',
+                due_at         TIMESTAMPTZ,
+                next_notify_at TIMESTAMPTZ,
+                last_notified  TIMESTAMPTZ,
+                notify_count   INT DEFAULT 0,
+                paused_until   TIMESTAMPTZ,
+                created_at     TIMESTAMPTZ DEFAULT NOW(),
+                updated_at     TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_user_status
+                ON reminders(user_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_next_notify
+                ON reminders(next_notify_at)
+                WHERE status = 'active';
+        """)
+
+
+# ── Users ──────────────────────────────────────────────────────────────────────
+
+async def get_or_create_user(chat_id: int, username: Optional[str]) -> User:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM users WHERE chat_id = $1", chat_id
+        )
+        if not row:
+            row = await conn.fetchrow(
+                """INSERT INTO users (chat_id, username)
+                   VALUES ($1, $2) RETURNING *""",
+                chat_id, username,
+            )
+        return _user(row)
+
+
+async def update_timezone(chat_id: int, tz: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET timezone = $1 WHERE chat_id = $2", tz, chat_id
+        )
+
+
+async def get_all_users() -> list[User]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM users")
+        return [_user(r) for r in rows]
+
+
+# ── Reminders ─────────────────────────────────────────────────────────────────
+
+async def add_reminder(
+    user_id: int,
+    title: str,
+    level: str,
+    due_at: Optional[datetime],
+    next_notify_at: Optional[datetime],
+) -> Reminder:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO reminders (user_id, title, level, due_at, next_notify_at)
+               VALUES ($1, $2, $3, $4, $5) RETURNING *""",
+            user_id, title, level, due_at, next_notify_at,
+        )
+        return _reminder(row)
+
+
+async def get_active_reminders(user_id: int, search: Optional[str] = None) -> list[Reminder]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if search:
+            rows = await conn.fetch(
+                """SELECT * FROM reminders
+                   WHERE user_id = $1 AND status NOT IN ('deleted', 'done')
+                   AND title ILIKE $2
+                   ORDER BY next_notify_at ASC NULLS LAST""",
+                user_id, f"%{search}%",
+            )
+        else:
+            rows = await conn.fetch(
+                """SELECT * FROM reminders
+                   WHERE user_id = $1 AND status NOT IN ('deleted', 'done')
+                   ORDER BY next_notify_at ASC NULLS LAST""",
+                user_id,
+            )
+        return [_reminder(r) for r in rows]
+
+
+async def set_reminder_done(reminder_id: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE reminders
+               SET status = 'done', next_notify_at = NULL, updated_at = NOW()
+               WHERE id = $1""",
+            reminder_id,
+        )
+
+
+async def set_reminder_deleted(reminder_id: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE reminders
+               SET status = 'deleted', next_notify_at = NULL, updated_at = NOW()
+               WHERE id = $1""",
+            reminder_id,
+        )
+
+
+async def set_reminder_paused(reminder_id: int, paused_until: datetime) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE reminders
+               SET status = 'paused', paused_until = $1, next_notify_at = NULL, updated_at = NOW()
+               WHERE id = $2""",
+            paused_until, reminder_id,
+        )
+
+
+async def get_due_reminders() -> list[tuple[Reminder, User]]:
+    """All active reminders whose next_notify_at is in the past."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone
+               FROM reminders r
+               JOIN users u ON u.id = r.user_id
+               WHERE r.status = 'active'
+                 AND r.next_notify_at IS NOT NULL
+                 AND r.next_notify_at <= NOW()"""
+        )
+        result = []
+        for row in rows:
+            reminder = _reminder(row)
+            user = User(
+                id=row["user_id"],
+                chat_id=row["u_chat_id"],
+                username=None,
+                timezone=row["u_timezone"],
+                created_at=datetime.now(timezone.utc),
+            )
+            result.append((reminder, user))
+        return result
+
+
+async def update_next_notify(reminder_id: int, next_notify_at: Optional[datetime]) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE reminders
+               SET next_notify_at = $1,
+                   last_notified = NOW(),
+                   notify_count = notify_count + 1,
+                   updated_at = NOW()
+               WHERE id = $2""",
+            next_notify_at, reminder_id,
+        )
+
+
+async def get_expired_pauses() -> list[tuple[Reminder, User]]:
+    """Paused reminders whose paused_until has passed."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT r.*, u.chat_id AS u_chat_id, u.timezone AS u_timezone
+               FROM reminders r
+               JOIN users u ON u.id = r.user_id
+               WHERE r.status = 'paused'
+                 AND r.paused_until IS NOT NULL
+                 AND r.paused_until <= NOW()"""
+        )
+        result = []
+        for row in rows:
+            reminder = _reminder(row)
+            user = User(
+                id=row["user_id"],
+                chat_id=row["u_chat_id"],
+                username=None,
+                timezone=row["u_timezone"],
+                created_at=datetime.now(timezone.utc),
+            )
+            result.append((reminder, user))
+        return result
+
+
+async def reactivate_reminder(reminder_id: int, next_notify_at: datetime) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE reminders
+               SET status = 'active', paused_until = NULL,
+                   next_notify_at = $1, updated_at = NOW()
+               WHERE id = $2""",
+            next_notify_at, reminder_id,
+        )
+
+
+# ── Row mappers ───────────────────────────────────────────────────────────────
+
+def _user(row) -> User:
+    return User(
+        id=row["id"],
+        chat_id=row["chat_id"],
+        username=row["username"],
+        timezone=row["timezone"],
+        created_at=row["created_at"],
+    )
+
+
+def _reminder(row) -> Reminder:
+    return Reminder(
+        id=row["id"],
+        user_id=row["user_id"],
+        title=row["title"],
+        level=row["level"],
+        status=row["status"],
+        due_at=row["due_at"],
+        next_notify_at=row["next_notify_at"],
+        last_notified=row["last_notified"],
+        notify_count=row["notify_count"],
+        paused_until=row["paused_until"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
