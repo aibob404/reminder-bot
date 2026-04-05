@@ -9,4 +9,4 @@ resources:
 
 images:
   - name: ghcr.io/aibob404/reminder-bot
-    newTag: sha-605c9ba
+    newTag: sha-40b3ea1
