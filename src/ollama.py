@@ -32,13 +32,14 @@ Reminder levels (extract from message, default "medium"):
 
 JSON format:
 {
-  "action":      "add|done|delete|pause|list|set_timezone|unknown",
-  "title":       "reminder name for add; search text for done/delete/pause; null for list/set_timezone",
-  "due_at":      "ISO 8601 datetime or null",
-  "level":       "low|medium|high or null",
-  "pause_until": "ISO 8601 datetime or null (for pause action)",
-  "timezone":    "IANA timezone string or null (for set_timezone action)",
-  "reply":       "short friendly confirmation message"
+  "action":        "add|done|delete|pause|list|set_timezone|unknown",
+  "title":         "reminder name for add; search text for done/delete/pause; null for list/set_timezone/reminder_num",
+  "due_at":        "ISO 8601 datetime or null",
+  "level":         "low|medium|high or null",
+  "pause_until":   "ISO 8601 datetime or null (for pause action)",
+  "timezone":      "IANA timezone string or null (for set_timezone action)",
+  "reminder_num":  "integer if user references a reminder by #N (e.g. '#3 done', 'delete #5'), else null",
+  "reply":         "short friendly confirmation message"
 }
 
 Rules:
@@ -49,8 +50,9 @@ Rules:
 - "pause until December 1" → pause_until = {year}-12-01T00:00:00
 - "pause for 5 months" → pause_until = now + 5 months
 - For set_timezone: convert city/country names to IANA (e.g. "Moscow" → "Europe/Moscow", "New York" → "America/New_York")
+- If user says "#3 done", "#2 delete", "pause #4 for 2 weeks": set reminder_num and action, title can be null
 - If no due_at mentioned for add, leave it null
-- title is null only for "list" and "set_timezone"
+- title is null only for "list", "set_timezone", and when reminder_num is set
 """
 
 
@@ -75,13 +77,14 @@ async def parse_intent(user_message: str) -> Intent:
 
         data = _extract_json(raw)
         return Intent(
-            action     = data.get("action", "unknown"),
-            title      = data.get("title"),
-            due_at     = data.get("due_at"),
-            level      = data.get("level") or "medium",
-            pause_until= data.get("pause_until"),
-            timezone   = data.get("timezone"),
-            reply      = data.get("reply"),
+            action       = data.get("action", "unknown"),
+            title        = data.get("title"),
+            due_at       = data.get("due_at"),
+            level        = data.get("level") or "medium",
+            pause_until  = data.get("pause_until"),
+            timezone     = data.get("timezone"),
+            reminder_num = data.get("reminder_num"),
+            reply        = data.get("reply"),
         )
 
     except Exception as e:

@@ -37,6 +37,7 @@ async def init_schema():
             CREATE TABLE IF NOT EXISTS reminders (
                 id             SERIAL PRIMARY KEY,
                 user_id        INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_seq       INT NOT NULL DEFAULT 0,
                 title          TEXT NOT NULL,
                 level          VARCHAR(10) NOT NULL DEFAULT 'medium',
                 status         VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -55,6 +56,23 @@ async def init_schema():
             CREATE INDEX IF NOT EXISTS idx_reminders_next_notify
                 ON reminders(next_notify_at)
                 WHERE status = 'active';
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_user_seq
+                ON reminders(user_id, user_seq);
+        """)
+        # Migration: add user_seq to existing tables if not present
+        await conn.execute("""
+            ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_seq INT NOT NULL DEFAULT 0;
+        """)
+        # Backfill user_seq for any existing rows that have 0
+        await conn.execute("""
+            WITH ranked AS (
+                SELECT id, user_id,
+                       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at, id) AS seq
+                FROM reminders WHERE user_seq = 0
+            )
+            UPDATE reminders r SET user_seq = ranked.seq
+            FROM ranked WHERE r.id = ranked.id;
         """)
 
 
@@ -102,11 +120,27 @@ async def add_reminder(
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO reminders (user_id, title, level, due_at, next_notify_at)
-               VALUES ($1, $2, $3, $4, $5) RETURNING *""",
+            """INSERT INTO reminders (user_id, user_seq, title, level, due_at, next_notify_at)
+               VALUES (
+                 $1,
+                 (SELECT COALESCE(MAX(user_seq), 0) + 1 FROM reminders WHERE user_id = $1),
+                 $2, $3, $4, $5
+               ) RETURNING *""",
             user_id, title, level, due_at, next_notify_at,
         )
         return _reminder(row)
+
+
+async def get_reminder_by_seq(user_id: int, user_seq: int) -> Optional[Reminder]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT * FROM reminders
+               WHERE user_id = $1 AND user_seq = $2
+               AND status NOT IN ('deleted', 'done')""",
+            user_id, user_seq,
+        )
+        return _reminder(row) if row else None
 
 
 async def get_active_reminders(user_id: int, search: Optional[str] = None) -> list[Reminder]:
@@ -117,14 +151,14 @@ async def get_active_reminders(user_id: int, search: Optional[str] = None) -> li
                 """SELECT * FROM reminders
                    WHERE user_id = $1 AND status NOT IN ('deleted', 'done')
                    AND title ILIKE $2
-                   ORDER BY next_notify_at ASC NULLS LAST""",
+                   ORDER BY user_seq ASC""",
                 user_id, f"%{search}%",
             )
         else:
             rows = await conn.fetch(
                 """SELECT * FROM reminders
                    WHERE user_id = $1 AND status NOT IN ('deleted', 'done')
-                   ORDER BY next_notify_at ASC NULLS LAST""",
+                   ORDER BY user_seq ASC""",
                 user_id,
             )
         return [_reminder(r) for r in rows]
@@ -257,6 +291,7 @@ def _reminder(row) -> Reminder:
     return Reminder(
         id=row["id"],
         user_id=row["user_id"],
+        user_seq=row["user_seq"],
         title=row["title"],
         level=row["level"],
         status=row["status"],

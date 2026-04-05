@@ -16,9 +16,10 @@ class User:
 class Reminder:
     id: int
     user_id: int
+    user_seq: int               # per-user sequential number (#1, #2, ...)
     title: str
-    level: str          # low | medium | high
-    status: str         # active | done | deleted | paused
+    level: str                  # low | medium | high
+    status: str                 # active | done | deleted | paused
     due_at: Optional[datetime]
     next_notify_at: Optional[datetime]
     last_notified: Optional[datetime]
@@ -36,6 +37,7 @@ class Intent:
     level: Optional[str] = None         # low | medium | high
     pause_until: Optional[str] = None   # ISO 8601 string from Ollama
     timezone: Optional[str] = None      # IANA timezone string
+    reminder_num: Optional[int] = None  # #N reference from user
     reply: Optional[str] = None
 
 

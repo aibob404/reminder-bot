@@ -28,7 +28,7 @@ async def check_due_reminders(app: Application) -> None:
                 await app.bot.send_message(
                     chat_id = user.chat_id,
                     text    = (
-                        f"🔔 Reminder!\n"
+                        f"🔔 Reminder #{reminder.user_seq}\n"
                         f"{_level_emoji(reminder.level)} [{reminder.level.upper()}] {reminder.title}"
                     ),
                 )
@@ -62,7 +62,7 @@ async def check_expired_pauses(app: Application) -> None:
 
             await app.bot.send_message(
                 chat_id = user.chat_id,
-                text    = f"▶️ Reminder resumed: \"{reminder.title}\"",
+                text    = f"▶️ Reminder #{reminder.user_seq} resumed: \"{reminder.title}\"",
             )
         except Exception as e:
             logger.error("Failed to reactivate reminder %d: %s", reminder.id, e)
