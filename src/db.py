@@ -25,6 +25,7 @@ async def get_pool() -> asyncpg.Pool:
 async def init_schema():
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Base tables
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id         SERIAL PRIMARY KEY,
@@ -32,8 +33,9 @@ async def init_schema():
                 username   TEXT,
                 timezone   TEXT NOT NULL DEFAULT 'UTC',
                 created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id             SERIAL PRIMARY KEY,
                 user_id        INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -48,31 +50,35 @@ async def init_schema():
                 paused_until   TIMESTAMPTZ,
                 created_at     TIMESTAMPTZ DEFAULT NOW(),
                 updated_at     TIMESTAMPTZ DEFAULT NOW()
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_reminders_user_status
-                ON reminders(user_id, status);
-
-            CREATE INDEX IF NOT EXISTS idx_reminders_next_notify
-                ON reminders(next_notify_at)
-                WHERE status = 'active';
-
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_user_seq
-                ON reminders(user_id, user_seq);
+            )
         """)
-        # Migration: add user_seq to existing tables if not present
+        # Migration: add user_seq if missing (existing deployments)
         await conn.execute("""
-            ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_seq INT NOT NULL DEFAULT 0;
+            ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_seq INT NOT NULL DEFAULT 0
         """)
-        # Backfill user_seq for any existing rows that have 0
+        # Backfill user_seq for any rows still at 0
         await conn.execute("""
             WITH ranked AS (
-                SELECT id, user_id,
+                SELECT id,
                        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at, id) AS seq
                 FROM reminders WHERE user_seq = 0
             )
             UPDATE reminders r SET user_seq = ranked.seq
-            FROM ranked WHERE r.id = ranked.id;
+            FROM ranked WHERE r.id = ranked.id
+        """)
+        # Indexes (after column is guaranteed to exist)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reminders_user_status
+                ON reminders(user_id, status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reminders_next_notify
+                ON reminders(next_notify_at)
+                WHERE status = 'active'
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_user_seq
+                ON reminders(user_id, user_seq)
         """)
 
 
